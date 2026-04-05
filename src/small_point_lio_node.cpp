@@ -10,6 +10,7 @@
 #include "lidar_adapter/livox_custom_msg.h"
 #include "lidar_adapter/livox_pointcloud2.h"
 #include "lidar_adapter/unitree_lidar.h"
+#include "lidar_adapter/standard_pointcloud2.h"
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
@@ -189,6 +190,8 @@ namespace small_point_lio {
             lidar_adapter = std::make_unique<CustomMid360DriverAdapter>();
         } else if (lidar_type == "unilidar") {
             lidar_adapter = std::make_unique<UnilidarAdapter>();
+        } else if (lidar_type == "standard_pointcloud2") {
+            lidar_adapter = std::make_unique<StandardPointCloud2Adapter>();
         } else {
             RCLCPP_ERROR(rclcpp::get_logger("small_point_lio"), "unknwon lidar type");
             rclcpp::shutdown();
