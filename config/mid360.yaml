@@ -33,13 +33,13 @@ small_point_lio:
                       0.0, 0.0, 1.0]
 
         # 滤波器参数
-        # R
+        # R (测量噪声 - 越大越不信任传感器测量)
         laser_point_cov: 0.01                      # 激光点的协方差
-        imu_meas_acc_cov: 0.01                     # IMU测量的加速度协方差
-        imu_meas_omg_cov: 0.01                     # IMU测量的角速度协方差
-        # Q
-        velocity_cov: 20.0                         # 速度的协方差
-        acceleration_cov: 500.0                    # 加速度的协方差
+        imu_meas_acc_cov: 0.1                      # IMU加速度协方差 (0.01->0.1: 降低对IMU加速度计的信任，防止Z发散)
+        imu_meas_omg_cov: 0.01                     # IMU角速度协方差
+        # Q (过程噪声 - 越大越不信任运动模型预测)
+        velocity_cov: 10.0                         # 速度过程协方差 (20->10: 更信任速度预测)
+        acceleration_cov: 100.0                    # 加速度过程协方差 (500->100: 更信任加速度预测，抑制Z抖动)
         omg_cov: 1000.0                            # 角速度的协方差
         ba_cov: 0.0001                             # 加速度偏置的协方差
         bg_cov: 0.0001                             # 角速度偏置的协方差
