@@ -88,13 +88,31 @@ namespace small_point_lio {
             odometry_msg.pose.pose.orientation.z = transform_stamped.transform.rotation.z;
             odometry_msg.pose.pose.orientation.w = transform_stamped.transform.rotation.w;
 
-            // TODO it is lidar_odom->lidar_frame, we need to transform it to odom->base_link
-            // odometry_msg.twist.twist.linear.x = odometry.velocity.x();
-            // odometry_msg.twist.twist.linear.y = odometry.velocity.y();
-            // odometry_msg.twist.twist.linear.z = odometry.velocity.z();
-            // odometry_msg.twist.twist.angular.x = odometry.angular_velocity.x();
-            // odometry_msg.twist.twist.angular.y = odometry.angular_velocity.y();
-            // odometry_msg.twist.twist.angular.z = odometry.angular_velocity.z();
+            // Twist, expressed in child_frame (base_link) per REP 105.
+            // ESKF state: velocity is the LIDAR velocity in lidar_odom (world) frame,
+            // angular_velocity (x.omg) is in the lidar body frame.
+            //   v_B = R_LB^T (R_WL^T v_W + w_L x t_LB)
+            //   w_B = R_LB^T w_L
+            // The w x t term is the lidar->base lever arm velocity (at 3 rad/s spin and
+            // 0.1 m offset it is ~0.3 m/s -- not negligible for a spinning robot).
+            {
+                const auto &tr = base_link_to_lidar_frame_transform.transform;
+                Eigen::Quaterniond q_LB(tr.rotation.w, tr.rotation.x, tr.rotation.y, tr.rotation.z);
+                Eigen::Vector3d t_LB(tr.translation.x, tr.translation.y, tr.translation.z);
+                Eigen::Matrix3d R_LB = q_LB.toRotationMatrix();
+                Eigen::Matrix3d R_WL = odometry.orientation.toRotationMatrix();
+
+                Eigen::Vector3d v_B = R_LB.transpose() *
+                        (R_WL.transpose() * odometry.velocity + odometry.angular_velocity.cross(t_LB));
+                Eigen::Vector3d w_B = R_LB.transpose() * odometry.angular_velocity;
+
+                odometry_msg.twist.twist.linear.x = v_B.x();
+                odometry_msg.twist.twist.linear.y = v_B.y();
+                odometry_msg.twist.twist.linear.z = v_B.z();
+                odometry_msg.twist.twist.angular.x = w_B.x();
+                odometry_msg.twist.twist.angular.y = w_B.y();
+                odometry_msg.twist.twist.angular.z = w_B.z();
+            }
 
             tf_broadcaster->sendTransform(transform_stamped);
             odometry_publisher->publish(odometry_msg);
