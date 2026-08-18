@@ -18,7 +18,11 @@
 
 #include "common/common.h"
 #include "small_point_lio/small_point_lio.h"
+// 录制依赖 mcap。SPL_WITH_MCAP 由 spl_recording 这个 target PUBLIC 定义，
+// 只有真正链接了它才成立 —— 保证「用到录制」和「链接得到录制」始终一致。
+#ifdef SPL_WITH_MCAP
 #include "transport/recording.h"
+#endif
 #include "transport/ros2/lidar_adapter/base_lidar.h"
 #include "transport/transport.h"
 #include "util/pointcloud_mapping.h"
@@ -51,8 +55,13 @@ namespace small_point_lio {
         rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr map_save_trigger;
         common::Odometry last_odometry;
         std::unique_ptr<util::PointcloudMapping> pointcloud_mapping;
+#ifdef SPL_WITH_MCAP
         std::unique_ptr<transport::RecordingWriter> recording_writer;
         std::mutex recording_mutex;
+#endif
+        /// initialize() 是否成功走完。失败时 start() 必须返回 false，
+        /// 否则 spin() 会对已经 shutdown 的 context 调 rclcpp::spin 而崩溃。
+        bool initialized = false;
 
         /// 两个构造入口的共同部分：建发布/订阅、接回调、装雷达适配器。
         void initialize(const Parameters &parameters,
@@ -66,6 +75,8 @@ namespace small_point_lio {
         SmallPointLioNode(const rclcpp::NodeOptions &options,
                           const Parameters &parameters,
                           const transport::TransportConfig &transport_config);
+
+        [[nodiscard]] bool is_initialized() const { return initialized; }
     };
 
     namespace transport {
@@ -74,6 +85,9 @@ namespace small_point_lio {
         public:
             RosTransport(const TransportConfig &transport_config, const Parameters &parameters);
             ~RosTransport() override;
+
+            RosTransport(const RosTransport &) = delete;
+            RosTransport &operator=(const RosTransport &) = delete;
 
             bool start() override;
             int spin() override;

@@ -1,5 +1,6 @@
 #include "transport/recording.h"
 
+#include "common/log.h"
 #include "transport/mcap/cdr.h"
 #include "transport/mcap/ros2_schemas.hpp"
 
@@ -19,6 +20,18 @@ namespace small_point_lio::transport {
 
         uint64_t to_nanoseconds(double seconds) {
             return static_cast<uint64_t>(seconds * 1e9);
+        }
+
+        /// 写失败只报第一次，不然一旦磁盘满会刷屏。
+        void report_write_failure(const mcap::Status &status, uint64_t &failures, const char *what) {
+            if (status.ok()) {
+                return;
+            }
+            if (failures == 0) {
+                SPL_LOG_ERROR(std::string("录制写入失败(") + what + "): " + status.message +
+                              "（后续同类错误不再重复报告）");
+            }
+            ++failures;
         }
 
         struct RosTime {
@@ -52,6 +65,37 @@ namespace small_point_lio::transport {
             bool found = false;
         };
 
+        /// PointField datatype 对应的字节宽度。0 表示不认识这个类型。
+        uint32_t datatype_size(uint8_t datatype) {
+            switch (datatype) {
+                case 1:// INT8
+                case 2:// UINT8
+                    return 1;
+                case 3:// INT16
+                case 4:// UINT16
+                    return 2;
+                case 5:// INT32
+                case 6:// UINT32
+                case PF_FLOAT32:
+                    return 4;
+                case PF_FLOAT64:
+                    return 8;
+                default:
+                    return 0;
+            }
+        }
+
+        /// 字段必须完整落在一个点的 point_step 之内。
+        /// 回放要吃外部录的包，offset/datatype 都是不可信输入，
+        /// 不校验就直接 record + offset 会读到 payload 外面去。
+        bool field_fits(const FieldLayout &field, uint32_t point_step) {
+            if (!field.found) {
+                return false;
+            }
+            uint32_t size = datatype_size(field.datatype);
+            return size != 0 && field.offset <= point_step - size && point_step >= size;
+        }
+
     }// namespace
 
     PointTimeMode point_time_mode_from_lidar_type(const std::string &lidar_type) {
@@ -74,6 +118,7 @@ namespace small_point_lio::transport {
         mcap::ChannelId imu_channel = 0;
         mcap::ChannelId lidar_channel = 0;
         std::string frame_id;
+        uint64_t write_failures = 0;
         uint32_t imu_sequence = 0;
         uint32_t lidar_sequence = 0;
         bool open = false;
@@ -152,7 +197,7 @@ namespace small_point_lio::transport {
         message.publishTime = message.logTime;
         message.data = reinterpret_cast<const std::byte *>(body.data().data());
         message.dataSize = body.data().size();
-        (void) impl->writer.write(message);
+        report_write_failure(impl->writer.write(message), impl->write_failures, "IMU");
     }
 
     void RecordingWriter::write_pointcloud(const std::vector<common::Point> &pointcloud) {
@@ -197,13 +242,17 @@ namespace small_point_lio::transport {
         message.publishTime = message.logTime;
         message.data = reinterpret_cast<const std::byte *>(body.data().data());
         message.dataSize = body.data().size();
-        (void) impl->writer.write(message);
+        report_write_failure(impl->writer.write(message), impl->write_failures, "点云");
     }
 
     void RecordingWriter::close() {
         if (impl->open) {
             impl->writer.close();
             impl->open = false;
+            if (impl->write_failures != 0) {
+                SPL_LOG_ERROR("录制期间共有 " + std::to_string(impl->write_failures) +
+                              " 条消息写入失败，这份录制不完整");
+            }
         }
     }
 
@@ -328,8 +377,32 @@ namespace small_point_lio::transport {
                     error = "点云里找不到 x/y/z 字段";
                     return Kind::End;
                 }
+                if (point_step == 0) {
+                    error = "点云 point_step 为 0";
+                    return Kind::End;
+                }
+                if (!field_fits(x_field, point_step) || !field_fits(y_field, point_step) ||
+                    !field_fits(z_field, point_step)) {
+                    error = "点云 x/y/z 字段的 offset/datatype 超出了 point_step";
+                    return Kind::End;
+                }
+                if (x_field.datatype != PF_FLOAT32 || y_field.datatype != PF_FLOAT32 ||
+                    z_field.datatype != PF_FLOAT32) {
+                    error = "点云 x/y/z 字段不是 FLOAT32";
+                    return Kind::End;
+                }
+                if (time_field.found && !field_fits(time_field, point_step)) {
+                    error = "点云时间字段的 offset/datatype 超出了 point_step";
+                    return Kind::End;
+                }
+                // height * width 与 count * point_step 都可能在 32 位上回绕，
+                // 一律用除法比较，别用乘法。
+                if (height != 0 && width > SIZE_MAX / height) {
+                    error = "点云 height*width 溢出";
+                    return Kind::End;
+                }
                 size_t count = static_cast<size_t>(height) * width;
-                if (point_step == 0 || count * point_step > data_size) {
+                if (count > data_size / point_step) {
                     error = "点云 data 长度和 point_step/width 对不上";
                     return Kind::End;
                 }

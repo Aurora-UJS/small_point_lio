@@ -65,6 +65,7 @@ namespace small_point_lio::transport {
                          fallback_mode,
                          error)) {
             SPL_LOG_ERROR(error);
+            stop();// start() 可能已经打开了轨迹输出文件
             return 1;
         }
         SPL_LOG_INFO("开始回放: " + transport_config.replay_path);

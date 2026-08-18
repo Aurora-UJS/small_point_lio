@@ -17,6 +17,7 @@
 """
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -37,16 +38,52 @@ def run(cmd, **kwargs):
     return result
 
 
-def build_ref(ref, workdir, index):
-    """在临时 worktree 里 checkout 某个 ref 并构建无 ROS 版本，返回可执行文件路径。"""
+def fast_math_disabled(build_dir):
+    """查 compile_commands.json，确认最终生效的浮点标志不是 -ffast-math。
+
+    GCC 取最后一个同类标志，而 add_compile_options 追加在 CMAKE_CXX_FLAGS 之后，
+    所以 -DCMAKE_CXX_FLAGS=-fno-fast-math 这种写法会被覆盖掉，必须查实际命令行。
+    """
+    commands = Path(build_dir) / "compile_commands.json"
+    if not commands.exists():
+        return False
+    try:
+        entries = json.loads(commands.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    for entry in entries:
+        if "estimator.cpp" not in entry.get("file", ""):
+            continue
+        flags = [f for f in entry.get("command", "").split() if f.endswith("fast-math")]
+        return bool(flags) and flags[-1] == "-fno-fast-math"
+    return False
+
+
+def build_ref(ref, workdir, index, created):
+    """在临时 worktree 里 checkout 某个 ref 并构建无 ROS 版本，返回可执行文件路径。
+
+    created 是调用方持有的清理列表：worktree 一建好就登记进去。
+    构建失败时 run() 会直接 sys.exit，晚登记的话 finally 里什么都清不掉，
+    残留的 worktree 会让下次同 ref 的 `git worktree add` 直接失败。
+    """
     slug = f"{index}_" + (re.sub(r"[^A-Za-z0-9]", "_", ref) or "ref")
     tree = workdir / f"src_{slug}"
     build = workdir / f"build_{slug}"
     print(f"  [{ref}] 建 worktree ...", flush=True)
     run(["git", "worktree", "add", "--detach", str(tree), ref], cwd=REPO)
+    created.append(tree)
     print(f"  [{ref}] 构建 ...", flush=True)
+    # SPL_DETERMINISTIC_FP=ON 关掉 -ffast-math。不关的话，与算法无关的代码改动
+    # 也会改变浮点重排，测出来的轨迹差异没法归因到你想验证的那处改动上
+    # （实测：同一份算法，仅因其它文件改动，轨迹差 41mm）。
     run(["cmake", "-S", str(tree), "-B", str(build),
-         "-DSPL_WITH_ROS2=OFF", "-DCMAKE_BUILD_TYPE=Release"])
+         "-DSPL_WITH_ROS2=OFF", "-DSPL_DETERMINISTIC_FP=ON", "-DCMAKE_BUILD_TYPE=Release"])
+    # 别假设开关生效了：老的 ref 里没有这个 option，-D 会被静默忽略。
+    # 直接查实际编译命令。
+    if not fast_math_disabled(build):
+        print(f"  [{ref}] ⚠ 这个 ref 的 CMakeLists 不认识 SPL_DETERMINISTIC_FP，"
+              f"仍在用 -ffast-math；本次对比可能混入与算法无关的编译差异",
+              flush=True)
     run(["cmake", "--build", str(build), "-j", str(os.cpu_count() or 4)])
     binary = build / "small_point_lio_standalone"
     if not binary.exists():
@@ -57,13 +94,14 @@ def build_ref(ref, workdir, index):
 def make_config(base_config, bag, out_tum, dest):
     """把基准配置改成 standalone 回放模式，指向给定的 bag 和输出。"""
     text = Path(base_config).read_text()
-    text = re.sub(r"^\s*transport:.*$", "        transport: standalone", text, flags=re.M)
+    text = re.sub(r"^\s*transport:.*$", lambda _: "        transport: standalone", text, flags=re.M)
     if "transport:" not in text:
         text = text.replace("ros__parameters:", "ros__parameters:\n        transport: standalone", 1)
     for key, value in (("replay_path", bag), ("odometry_output_path", out_tum), ("record_path", "")):
         pattern = rf"^\s*{key}:.*$"
         line = f'        {key}: "{value}"'
-        text = re.sub(pattern, line, text, flags=re.M) if re.search(pattern, text, re.M) else \
+        # 用可调用对象而不是字符串：路径里的反斜杠会被 re.sub 当成转义序列
+        text = re.sub(pattern, lambda _: line, text, flags=re.M) if re.search(pattern, text, re.M) else \
             text.replace("ros__parameters:", f"ros__parameters:\n{line}", 1)
     Path(dest).write_text(text)
     return dest
@@ -182,7 +220,9 @@ def main():
     parser.add_argument("--config", required=True, help="基准配置 yaml")
     parser.add_argument("--ref", action="append", default=[], help="要比较的 git ref，给两次")
     parser.add_argument("--binary", action="append", default=[],
-                        help="跳过构建，直接用现成可执行文件，格式 名字=路径")
+                        help="跳过构建，直接用现成可执行文件，格式 名字=路径。"
+                             "注意：自己构建时请加 -DSPL_DETERMINISTIC_FP=ON，"
+                             "否则 -ffast-math 会让无关改动也影响轨迹")
     parser.add_argument("--out", default=None, help="输出目录（默认建临时目录）")
     args = parser.parse_args()
 
@@ -201,11 +241,8 @@ def main():
 
     created_worktrees = []
     try:
-        for offset, ref in enumerate(pending_refs):
-            index = len(targets)
-            targets.append((ref, build_ref(ref, work, index)))
-            slug = f"{index}_" + (re.sub(r"[^A-Za-z0-9]", "_", ref) or "ref")
-            created_worktrees.append(work / f"src_{slug}")
+        for ref in pending_refs:
+            targets.append((ref, build_ref(ref, work, len(targets), created_worktrees)))
 
         results = []
         for index, (name, binary) in enumerate(targets):

@@ -51,6 +51,10 @@ namespace small_point_lio {
         transport::TransportConfig transport_config;
         transport::read_parameters_from_node(*this, parameters, transport_config);
         initialize(parameters, transport_config);
+        if (!initialized) {
+            // 组件/节点这条路没有返回值可用，沿用原来的行为：直接停掉。
+            rclcpp::shutdown();
+        }
     }
 
     SmallPointLioNode::SmallPointLioNode(const rclcpp::NodeOptions &options,
@@ -82,6 +86,7 @@ namespace small_point_lio {
 
         // 录制：把进入算法之前的原始点云/IMU 原样落盘，供 standalone 离线回放。
         // 改滤波器时拿它做新旧对照，比在真车上反复复现要靠谱得多。
+#ifdef SPL_WITH_MCAP
         if (!transport_config.record_path.empty()) {
             auto writer = std::make_unique<transport::RecordingWriter>();
             std::string error;
@@ -96,6 +101,11 @@ namespace small_point_lio {
                 RCLCPP_ERROR(get_logger(), "%s", error.c_str());
             }
         }
+#else
+        if (!transport_config.record_path.empty()) {
+            RCLCPP_ERROR(get_logger(), "本次构建没有编入 mcap，record_path 被忽略");
+        }
+#endif
 
         map_save_trigger = create_service<std_srvs::srv::Trigger>(
                 "map_save",
@@ -264,7 +274,6 @@ namespace small_point_lio {
             lidar_adapter = std::make_unique<LivoxCustomMsgAdapter>();
 #else
             RCLCPP_ERROR(rclcpp::get_logger("small_point_lio"), "livox_custom_msg requested but not available!");
-            rclcpp::shutdown();
             return;
 #endif
         } else if (lidar_type == "livox_pointcloud2") {
@@ -276,15 +285,16 @@ namespace small_point_lio {
         } else if (lidar_type == "standard_pointcloud2") {
             lidar_adapter = std::make_unique<StandardPointCloud2Adapter>();
         } else {
-            RCLCPP_ERROR(rclcpp::get_logger("small_point_lio"), "unknwon lidar type");
-            rclcpp::shutdown();
+            RCLCPP_ERROR(rclcpp::get_logger("small_point_lio"), "unknown lidar type: %s", lidar_type.c_str());
             return;
         }
         lidar_adapter->setup_subscription(this, lidar_topic, [this](const std::vector<common::Point> &pointcloud) {
+#ifdef SPL_WITH_MCAP
             if (recording_writer) {
                 std::lock_guard<std::mutex> guard(recording_mutex);
                 recording_writer->write_pointcloud(pointcloud);
             }
+#endif
             small_point_lio->on_point_cloud_callback(pointcloud);
             small_point_lio->handle_once();
         });
@@ -296,13 +306,16 @@ namespace small_point_lio {
                     imu_msg.angular_velocity = Eigen::Vector3d(msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z);
                     imu_msg.linear_acceleration = Eigen::Vector3d(msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z);
                     imu_msg.timestamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9;
+#ifdef SPL_WITH_MCAP
                     if (recording_writer) {
                         std::lock_guard<std::mutex> guard(recording_mutex);
                         recording_writer->write_imu(imu_msg);
                     }
+#endif
                     small_point_lio->on_imu_callback(imu_msg);
                     small_point_lio->handle_once();
                 });
+        initialized = true;
     }
 
     namespace transport {
@@ -324,6 +337,11 @@ namespace small_point_lio {
             // 否则同一个 key 会被声明两次。
             options.automatically_declare_parameters_from_overrides(false);
             node = std::make_shared<SmallPointLioNode>(options, parameters, transport_config);
+            if (!node->is_initialized()) {
+                // 不检查的话，spin() 会对已 shutdown 的 context 调 rclcpp::spin 直接 abort。
+                node.reset();
+                return false;
+            }
             return true;
         }
 

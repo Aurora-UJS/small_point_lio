@@ -43,7 +43,7 @@ namespace small_point_lio::transport {
         // ---- standalone 通信层 ----
         /// 回放用的录制文件路径。
         std::string replay_path;
-        /// 里程计输出落盘路径（TUM 格式：timestamp tx ty tz qx qy qz qw）。空则只打到 stdout。
+        /// 里程计输出落盘路径（TUM 格式：timestamp tx ty tz qx qy qz qw）。留空则不输出轨迹。
         std::string odometry_output_path;
         /// 回放结束后把建好的点云图存成 pcd 的路径。空则不存。
         std::string pcd_output_path;

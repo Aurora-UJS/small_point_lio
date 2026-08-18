@@ -29,10 +29,30 @@ if(MSVC)
     add_compile_options("/utf-8")
 endif()
 
+# 做版本间轨迹对比时打开：关掉 -ffast-math。
+#
+# 上游默认带 -ffast-math，它允许浮点重排，于是**与算法无关的代码改动**也会
+# 改变编译器的内联/向量化决策，进而改变末位浮点结果。这点误差在上万次 EKF
+# 更新里会放大成可见的轨迹差异。
+#
+# 实测（58 s 录制，同一份算法，只改了 config_loader/recording 等无关文件）：
+#   默认（-ffast-math）    里程计输出 609 次 vs 580 次，位置最大差 41 mm
+#   两侧都关掉 -ffast-math  逐位相同
+# 具体是哪一处重排造成的没有定位，只确认了「关掉这个标志差异就消失」。
+#
+# 后果是：开着 -ffast-math 做 A/B 对比，测出的差异无法归因到你想验证的改动上。
+# tools/compare_runs.py 会自动打开这个开关。日常构建保持默认（性能优先）。
+option(SPL_DETERMINISTIC_FP "关闭 -ffast-math，用于可归因的版本间对比" OFF)
+
 # optimize performance
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     add_compile_options("-march=native")
-    add_compile_options("-ffast-math")
+    if(SPL_DETERMINISTIC_FP)
+        add_compile_options("-fno-fast-math")
+        message(STATUS "SPL_DETERMINISTIC_FP=ON：已关闭 -ffast-math")
+    else()
+        add_compile_options("-ffast-math")
+    endif()
     add_compile_options("-fno-math-errno")
 endif()
 

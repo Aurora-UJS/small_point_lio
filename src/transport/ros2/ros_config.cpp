@@ -1,6 +1,27 @@
 #include "transport/ros2/ros_config.hpp"
 
+#include <cmath>
+#include <rclcpp/exceptions.hpp>
+
 namespace small_point_lio::transport {
+
+    namespace {
+
+        /// ROS 参数是外部输入（launch 文件 / ros2 param 覆盖都能改），
+        /// 长度不对时直接 operator[] 是未定义行为，得先查再用。
+        std::vector<double> require_size(rclcpp::Node &node,
+                                         const std::string &name,
+                                         const std::vector<double> &values,
+                                         size_t expected) {
+            if (values.size() != expected) {
+                throw rclcpp::exceptions::InvalidParameterValueException(
+                        "参数 `" + name + "` 应有 " + std::to_string(expected) +
+                        " 个元素，实际为 " + std::to_string(values.size()));
+            }
+            return values;
+        }
+
+    }// namespace
 
     void read_parameters_from_node(rclcpp::Node &node,
                                    Parameters &parameters,
@@ -24,13 +45,19 @@ namespace small_point_lio::transport {
                 static_cast<float>(node.declare_parameter<double>("space_downsample_leaf_size"));
 
         // IMU处理
-        std::vector<double> gravity_temp = node.declare_parameter<std::vector<double>>("gravity");
+        std::vector<double> gravity_temp = require_size(
+                node, "gravity", node.declare_parameter<std::vector<double>>("gravity"), 3);
         parameters.gravity << gravity_temp[0], gravity_temp[1], gravity_temp[2];
         parameters.check_satu = node.declare_parameter<bool>("check_satu");
         parameters.fix_gravity_direction = node.declare_parameter<bool>("fix_gravity_direction");
         auto raw_satu_acc = node.declare_parameter<double>("satu_acc");
         auto raw_satu_gyro = node.declare_parameter<double>("satu_gyro");
         parameters.acc_norm = node.declare_parameter<double>("acc_norm");
+        if (!std::isfinite(parameters.acc_norm) || parameters.acc_norm <= 0.0) {
+            // imu_acceleration_scale = |gravity| / acc_norm，取 0 会让整个状态变 NaN
+            throw rclcpp::exceptions::InvalidParameterValueException(
+                    "参数 `acc_norm` 应为正的有限数，实际为 " + std::to_string(parameters.acc_norm));
+        }
 
         // 地图
         parameters.map_resolution = node.declare_parameter<double>("map_resolution");
@@ -38,9 +65,11 @@ namespace small_point_lio::transport {
 
         // 雷达与IMU相对位姿
         parameters.extrinsic_est_en = node.declare_parameter<bool>("extrinsic_est_en");
-        std::vector<double> extrinsic_T_temp = node.declare_parameter<std::vector<double>>("extrinsic_T");
+        std::vector<double> extrinsic_T_temp = require_size(
+                node, "extrinsic_T", node.declare_parameter<std::vector<double>>("extrinsic_T"), 3);
         parameters.extrinsic_T << extrinsic_T_temp[0], extrinsic_T_temp[1], extrinsic_T_temp[2];
-        std::vector<double> extrinsic_R_temp = node.declare_parameter<std::vector<double>>("extrinsic_R");
+        std::vector<double> extrinsic_R_temp = require_size(
+                node, "extrinsic_R", node.declare_parameter<std::vector<double>>("extrinsic_R"), 9);
         parameters.extrinsic_R << extrinsic_R_temp[0], extrinsic_R_temp[1], extrinsic_R_temp[2],
                 extrinsic_R_temp[3], extrinsic_R_temp[4], extrinsic_R_temp[5],
                 extrinsic_R_temp[6], extrinsic_R_temp[7], extrinsic_R_temp[8];

@@ -1,5 +1,6 @@
 #include "transport/config_loader.h"
 
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -168,6 +169,27 @@ namespace small_point_lio::transport {
                 return 0.0;
             }
 
+            /// 读一个非负整数。负数直接 static_cast<size_t> 会回绕成天文数字。
+            long long non_negative_integer(const std::string &key) {
+                double value = number(key);
+                if (!std::isfinite(value) || value < 0.0 ||
+                    value != std::floor(value) || value > 1e15) {
+                    fail(key, "应为非负整数，实际为 " + std::to_string(value));
+                    return 0;
+                }
+                return static_cast<long long>(value);
+            }
+
+            /// 读一个正的有限数。
+            double positive_number(const std::string &key) {
+                double value = number(key);
+                if (!std::isfinite(value) || value <= 0.0) {
+                    fail(key, "应为正的有限数，实际为 " + std::to_string(value));
+                    return 1.0;
+                }
+                return value;
+            }
+
             std::vector<double> numbers(const std::string &key, size_t expected) {
                 std::vector<double> result;
                 auto it = values.find(key);
@@ -190,7 +212,13 @@ namespace small_point_lio::transport {
                         continue;
                     }
                     try {
-                        result.push_back(std::stod(trimmed));
+                        size_t consumed = 0;
+                        double parsed = std::stod(trimmed, &consumed);
+                        // stod 只认前缀，"1.0invalid" 会静默变成 1.0，必须查剩余部分
+                        if (!trim(trimmed.substr(consumed)).empty()) {
+                            throw std::invalid_argument("trailing characters");
+                        }
+                        result.push_back(parsed);
                     } catch (const std::exception &) {
                         fail(key, "列表里有非数值项: " + trimmed);
                         return std::vector<double>(expected, 0.0);
@@ -243,7 +271,7 @@ namespace small_point_lio::transport {
                 reader.string_of("pcd_output_path", transport_config.pcd_output_path);
 
         // ---- 点云过滤 ----
-        parameters.point_filter_num = static_cast<int>(reader.number("point_filter_num"));
+        parameters.point_filter_num = static_cast<int>(reader.non_negative_integer("point_filter_num"));
         double min_distance = reader.number("min_distance");
         double max_distance = reader.number("max_distance");
         parameters.space_downsample = reader.boolean("space_downsample", true, true);
@@ -256,11 +284,12 @@ namespace small_point_lio::transport {
         parameters.fix_gravity_direction = reader.boolean("fix_gravity_direction", true, true);
         double raw_satu_acc = reader.number("satu_acc");
         double raw_satu_gyro = reader.number("satu_gyro");
-        parameters.acc_norm = reader.number("acc_norm");
+        // 它是 imu_acceleration_scale = |gravity| / acc_norm 的除数，0 会让整个状态变 NaN
+        parameters.acc_norm = reader.positive_number("acc_norm");
 
         // ---- 地图 ----
         parameters.map_resolution = reader.number("map_resolution");
-        parameters.init_map_size = static_cast<size_t>(reader.number("init_map_size"));
+        parameters.init_map_size = static_cast<size_t>(reader.non_negative_integer("init_map_size"));
 
         // ---- 雷达与 IMU 相对位姿 ----
         parameters.extrinsic_est_en = reader.boolean("extrinsic_est_en", false, true);
