@@ -16,7 +16,7 @@ def launch_setup(context, *args, **kwargs):
             PathJoinSubstitution([
                 FindPackageShare("small_point_lio"),
                 "config",
-                "mid360.yaml",
+                "mid360_sim.yaml",
             ]),
             {'use_sim_time': True}
         ],

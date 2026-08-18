@@ -15,7 +15,7 @@ def generate_launch_description():
                 [
                     FindPackageShare("small_point_lio"),
                     "config",
-                    "mid360.yaml",
+                    "mid360_real.yaml",
                 ]
             )
         ],

@@ -5,6 +5,8 @@
  */
 
 #include "preprocess.h"
+
+#include "common/log.h"
 #include "parameters.h"
 
 namespace small_point_lio {
@@ -65,7 +67,7 @@ namespace small_point_lio {
 
     void Preprocess::on_imu_callback(const common::ImuMsg &imu_msg) {
         if (imu_msg.timestamp < last_timestamp_imu) {
-            RCLCPP_ERROR(rclcpp::get_logger("small_point_lio"), "imu loop back");
+            SPL_LOG_ERROR("imu loop back");
             return;
         }
         imu_deque.emplace_back(imu_msg);

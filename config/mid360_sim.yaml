@@ -1,5 +1,12 @@
+# 仿真专用配置（Gazebo / rm_sim_26）。
+#
+# ⚠️ 不要拿这份去接真 Mid-360。仿真 IMU 输出 m/s^2，真机 Livox SDK 输出 g，
+#    acc_norm / satu_acc 两边差 9.81 倍，配错会直接发散。真机用 mid360_real.yaml。
 small_point_lio:
     ros__parameters:
+        transport: ros2                            # 通信层：ros2 / standalone
+        record_path: ""                            # 非空则把原始点云+IMU录成 .splrec，供 standalone 离线回放
+
         lidar_topic: "/livox/lidar"                  # 点云话题名
         imu_topic: "/livox/imu"                      # IMU话题名
         lidar_type: standard_pointcloud2           # 雷达类型 - 适配仿真 standard PointCloud2

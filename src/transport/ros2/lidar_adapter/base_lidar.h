@@ -7,7 +7,9 @@
 #pragma once
 
 #include "common/common.h"
+
 #include <pch.h>
+#include <rclcpp/rclcpp.hpp>
 
 namespace small_point_lio {
 

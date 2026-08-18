@@ -4,12 +4,25 @@
  * Licensed under the MIT License. See License.txt in the project root for license information.
  */
 
+/**
+ * ROS 2 通信层。
+ *
+ * 两种用法，行为一致：
+ *   1. 作为 rclcpp 组件 / small_point_lio_node 可执行文件 —— 参数走 ROS 参数系统，
+ *      ros2 param set、launch 覆盖、参数热重载都照旧；
+ *   2. 由统一入口 small_point_lio_standalone 按配置文件里的 transport: ros2 拉起 ——
+ *      参数走 yaml 解析器，其余完全相同。
+ */
+
 #pragma once
 
 #include "common/common.h"
-#include "lidar_adapter/base_lidar.h"
 #include "small_point_lio/small_point_lio.h"
+#include "transport/recording.h"
+#include "transport/ros2/lidar_adapter/base_lidar.h"
+#include "transport/transport.h"
 #include "util/pointcloud_mapping.h"
+
 #include <nav_msgs/msg/odometry.hpp>
 #include <pch.h>
 #include <rclcpp/logger.hpp>
@@ -38,9 +51,41 @@ namespace small_point_lio {
         rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr map_save_trigger;
         common::Odometry last_odometry;
         std::unique_ptr<util::PointcloudMapping> pointcloud_mapping;
+        std::unique_ptr<transport::RecordingWriter> recording_writer;
+        std::mutex recording_mutex;
+
+        /// 两个构造入口的共同部分：建发布/订阅、接回调、装雷达适配器。
+        void initialize(const Parameters &parameters,
+                        const transport::TransportConfig &transport_config);
 
     public:
+        /// 组件入口：参数从 ROS 参数系统读。
         explicit SmallPointLioNode(const rclcpp::NodeOptions &options);
+
+        /// 统一入口：参数已经由调用方（yaml 解析器）准备好。
+        SmallPointLioNode(const rclcpp::NodeOptions &options,
+                          const Parameters &parameters,
+                          const transport::TransportConfig &transport_config);
     };
+
+    namespace transport {
+
+        class RosTransport : public ITransport {
+        public:
+            RosTransport(const TransportConfig &transport_config, const Parameters &parameters);
+            ~RosTransport() override;
+
+            bool start() override;
+            int spin() override;
+            void stop() override;
+
+        private:
+            TransportConfig transport_config;
+            Parameters parameters;
+            std::shared_ptr<SmallPointLioNode> node;
+            bool owns_context = false;
+        };
+
+    }// namespace transport
 
 }// namespace small_point_lio

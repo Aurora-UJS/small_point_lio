@@ -28,7 +28,7 @@ namespace small_point_lio {
     public:
         Eigen::Matrix<state::value_type, state::DIM, state::DIM> Q;
 
-        explicit SmallPointLio(rclcpp::Node &node);
+        explicit SmallPointLio(const Parameters &parameters);
 
         void reset();
 
@@ -41,6 +41,8 @@ namespace small_point_lio {
         void set_pointcloud_callback(const std::function<void(const std::vector<Eigen::Vector3f> &pointcloud)> &pointcloud_callback);
 
         void set_odometry_callback(const std::function<void(const common::Odometry &odometry)> &odometry_callback);
+
+        [[nodiscard]] const Diagnostics &diagnostics() const { return estimator.diagnostics; }
 
     private:
         void publish_odometry(double timestamp);
