@@ -21,6 +21,7 @@ namespace small_point_lio {
     }
 
     void Estimator::reset() {
+        diagnostics = Diagnostics{};// 新的一次会话，计数从头开始
         ivox = std::make_shared<SmallIVox>(parameters->map_resolution, 1000000);
         kf.P = Eigen::Matrix<state::value_type, state::DIM, state::DIM>::Identity() * 0.01;
         kf.P.block<3, 3>(state::gravity_index, state::gravity_index).diagonal().fill(0.0001);
@@ -113,15 +114,18 @@ namespace small_point_lio {
         measurement_result.z.segment<3>(3) = linear_acceleration * imu_acceleration_scale - s.acceleration - s.ba;
         measurement_result.imu_meas_omg_cov = static_cast<state::value_type>(parameters->imu_meas_omg_cov);
         measurement_result.imu_meas_acc_cov = static_cast<state::value_type>(parameters->imu_meas_acc_cov);
+        ++diagnostics.imu_updates;
         if (parameters->check_satu) {
             for (int i = 0; i < 3; i++) {
                 if (std::abs(angular_velocity(i)) >= parameters->satu_gyro) {
                     measurement_result.satu_check[i] = true;
                     measurement_result.z(i) = 0.0;
+                    ++diagnostics.gyro_saturated[i];
                 }
                 if (std::abs(linear_acceleration(i)) >= parameters->satu_acc) {
                     measurement_result.satu_check[i + 3] = true;
                     measurement_result.z(i + 3) = 0.0;
+                    ++diagnostics.acc_saturated[i];
                 }
             }
         }

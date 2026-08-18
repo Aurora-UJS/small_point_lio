@@ -17,6 +17,7 @@
 #include <list>
 #include <memory>
 #include <queue>
+#include <string>
 #include <vector>
 // Eigen
 #include <Eigen/Core>
@@ -29,7 +30,9 @@
 #include <ankerl/unordered_dense.h>
 // liblzf
 #include <liblzf/lzf.h>
-// ros2
-#include <rclcpp/rclcpp.hpp>
+
+// 这里刻意不再包含 rclcpp。
+// 算法核心（src/common, src/io, src/small_point_lio, src/util）必须能在没有 ROS 的
+// 环境下编译。ROS 头文件只允许出现在 src/transport/ros2/ 下面。
 
 #endif// PCH_H

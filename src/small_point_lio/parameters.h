@@ -45,7 +45,10 @@ namespace small_point_lio {
 
         bool publish_odometry_without_downsample = false;
 
-        void read_parameters(rclcpp::Node &node);
+        /// 由 min_distance / max_distance 换算平方值，并对 satu 阈值留 1% 余量。
+        /// 各个通信层读完原始配置后必须调用一次，否则过滤和饱和检查行为不对。
+        void finalize(double min_distance, double max_distance,
+                      double raw_satu_acc, double raw_satu_gyro);
     };
 
 }// namespace small_point_lio

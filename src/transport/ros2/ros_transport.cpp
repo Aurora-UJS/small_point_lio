@@ -4,26 +4,77 @@
  * Licensed under the MIT License. See License.txt in the project root for license information.
  */
 
-#include "small_point_lio_node.hpp"
+#include "transport/ros2/ros_transport.hpp"
+
+#include "common/log.h"
 #include "io/pcd_io.h"
-#include "lidar_adapter/custom_mid360_driver.h"
-#include "lidar_adapter/livox_custom_msg.h"
-#include "lidar_adapter/livox_pointcloud2.h"
-#include "lidar_adapter/unitree_lidar.h"
-#include "lidar_adapter/standard_pointcloud2.h"
+#include "transport/ros2/lidar_adapter/custom_mid360_driver.h"
+#include "transport/ros2/lidar_adapter/livox_custom_msg.h"
+#include "transport/ros2/lidar_adapter/livox_pointcloud2.h"
+#include "transport/ros2/lidar_adapter/standard_pointcloud2.h"
+#include "transport/ros2/lidar_adapter/unitree_lidar.h"
+#include "transport/ros2/ros_config.hpp"
+
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 namespace small_point_lio {
 
+    namespace {
+
+        /// 把核心的日志出口接到 rosout，这样 standalone 和 ROS 两种跑法日志都不丢。
+        void install_ros_log_sink() {
+            common::set_log_sink([](common::LogLevel level, const std::string &message) {
+                rclcpp::Logger logger = rclcpp::get_logger("small_point_lio");
+                switch (level) {
+                    case common::LogLevel::Debug:
+                        RCLCPP_DEBUG(logger, "%s", message.c_str());
+                        break;
+                    case common::LogLevel::Info:
+                        RCLCPP_INFO(logger, "%s", message.c_str());
+                        break;
+                    case common::LogLevel::Warn:
+                        RCLCPP_WARN(logger, "%s", message.c_str());
+                        break;
+                    case common::LogLevel::Error:
+                        RCLCPP_ERROR(logger, "%s", message.c_str());
+                        break;
+                }
+            });
+        }
+
+    }// namespace
+
     SmallPointLioNode::SmallPointLioNode(const rclcpp::NodeOptions &options)
         : Node("small_point_lio", options) {
-        std::string lidar_topic = declare_parameter<std::string>("lidar_topic");
-        std::string imu_topic = declare_parameter<std::string>("imu_topic");
-        std::string lidar_type = declare_parameter<std::string>("lidar_type");
-        std::string lidar_frame = declare_parameter<std::string>("lidar_frame");
-        bool save_pcd = declare_parameter<bool>("save_pcd");
-        small_point_lio = std::make_unique<small_point_lio::SmallPointLio>(*this);
+        Parameters parameters;
+        transport::TransportConfig transport_config;
+        transport::read_parameters_from_node(*this, parameters, transport_config);
+        initialize(parameters, transport_config);
+        if (!initialized) {
+            // 组件/节点这条路没有返回值可用，沿用原来的行为：直接停掉。
+            rclcpp::shutdown();
+        }
+    }
+
+    SmallPointLioNode::SmallPointLioNode(const rclcpp::NodeOptions &options,
+                                         const Parameters &parameters,
+                                         const transport::TransportConfig &transport_config)
+        : Node("small_point_lio", options) {
+        initialize(parameters, transport_config);
+    }
+
+    void SmallPointLioNode::initialize(const Parameters &parameters,
+                                       const transport::TransportConfig &transport_config) {
+        install_ros_log_sink();
+
+        const std::string lidar_topic = transport_config.lidar_topic;
+        const std::string imu_topic = transport_config.imu_topic;
+        const std::string lidar_type = transport_config.lidar_type;
+        const std::string lidar_frame = transport_config.lidar_frame;
+        const bool save_pcd = transport_config.save_pcd;
+
+        small_point_lio = std::make_unique<small_point_lio::SmallPointLio>(parameters);
         odometry_publisher = create_publisher<nav_msgs::msg::Odometry>("/Odometry", 1000);
         pointcloud_publisher = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 1000);
         tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -32,6 +83,30 @@ namespace small_point_lio {
         if (save_pcd) {
             pointcloud_mapping = std::make_unique<util::PointcloudMapping>(0.02);
         }
+
+        // 录制：把进入算法之前的原始点云/IMU 原样落盘，供 standalone 离线回放。
+        // 改滤波器时拿它做新旧对照，比在真车上反复复现要靠谱得多。
+#ifdef SPL_WITH_MCAP
+        if (!transport_config.record_path.empty()) {
+            auto writer = std::make_unique<transport::RecordingWriter>();
+            std::string error;
+            if (writer->open(transport_config.record_path,
+                             transport_config.imu_topic,
+                             transport_config.lidar_topic,
+                             lidar_frame,
+                             error)) {
+                recording_writer = std::move(writer);
+                RCLCPP_INFO(get_logger(), "开始录制到 %s", transport_config.record_path.c_str());
+            } else {
+                RCLCPP_ERROR(get_logger(), "%s", error.c_str());
+            }
+        }
+#else
+        if (!transport_config.record_path.empty()) {
+            RCLCPP_ERROR(get_logger(), "本次构建没有编入 mcap，record_path 被忽略");
+        }
+#endif
+
         map_save_trigger = create_service<std_srvs::srv::Trigger>(
                 "map_save",
                 [this, save_pcd, lidar_frame](const std_srvs::srv::Trigger::Request::SharedPtr req, std_srvs::srv::Trigger::Response::SharedPtr res) {
@@ -88,13 +163,31 @@ namespace small_point_lio {
             odometry_msg.pose.pose.orientation.z = transform_stamped.transform.rotation.z;
             odometry_msg.pose.pose.orientation.w = transform_stamped.transform.rotation.w;
 
-            // TODO it is lidar_odom->lidar_frame, we need to transform it to odom->base_link
-            // odometry_msg.twist.twist.linear.x = odometry.velocity.x();
-            // odometry_msg.twist.twist.linear.y = odometry.velocity.y();
-            // odometry_msg.twist.twist.linear.z = odometry.velocity.z();
-            // odometry_msg.twist.twist.angular.x = odometry.angular_velocity.x();
-            // odometry_msg.twist.twist.angular.y = odometry.angular_velocity.y();
-            // odometry_msg.twist.twist.angular.z = odometry.angular_velocity.z();
+            // Twist, expressed in child_frame (base_link) per REP 105.
+            // ESKF state: velocity is the LIDAR velocity in lidar_odom (world) frame,
+            // angular_velocity (x.omg) is in the lidar body frame.
+            //   v_B = R_LB^T (R_WL^T v_W + w_L x t_LB)
+            //   w_B = R_LB^T w_L
+            // The w x t term is the lidar->base lever arm velocity (at 3 rad/s spin and
+            // 0.1 m offset it is ~0.3 m/s -- not negligible for a spinning robot).
+            {
+                const auto &tr = base_link_to_lidar_frame_transform.transform;
+                Eigen::Quaterniond q_LB(tr.rotation.w, tr.rotation.x, tr.rotation.y, tr.rotation.z);
+                Eigen::Vector3d t_LB(tr.translation.x, tr.translation.y, tr.translation.z);
+                Eigen::Matrix3d R_LB = q_LB.toRotationMatrix();
+                Eigen::Matrix3d R_WL = odometry.orientation.toRotationMatrix();
+
+                Eigen::Vector3d v_B = R_LB.transpose() *
+                                      (R_WL.transpose() * odometry.velocity + odometry.angular_velocity.cross(t_LB));
+                Eigen::Vector3d w_B = R_LB.transpose() * odometry.angular_velocity;
+
+                odometry_msg.twist.twist.linear.x = v_B.x();
+                odometry_msg.twist.twist.linear.y = v_B.y();
+                odometry_msg.twist.twist.linear.z = v_B.z();
+                odometry_msg.twist.twist.angular.x = w_B.x();
+                odometry_msg.twist.twist.angular.y = w_B.y();
+                odometry_msg.twist.twist.angular.z = w_B.z();
+            }
 
             tf_broadcaster->sendTransform(transform_stamped);
             odometry_publisher->publish(odometry_msg);
@@ -181,7 +274,6 @@ namespace small_point_lio {
             lidar_adapter = std::make_unique<LivoxCustomMsgAdapter>();
 #else
             RCLCPP_ERROR(rclcpp::get_logger("small_point_lio"), "livox_custom_msg requested but not available!");
-            rclcpp::shutdown();
             return;
 #endif
         } else if (lidar_type == "livox_pointcloud2") {
@@ -193,11 +285,16 @@ namespace small_point_lio {
         } else if (lidar_type == "standard_pointcloud2") {
             lidar_adapter = std::make_unique<StandardPointCloud2Adapter>();
         } else {
-            RCLCPP_ERROR(rclcpp::get_logger("small_point_lio"), "unknwon lidar type");
-            rclcpp::shutdown();
+            RCLCPP_ERROR(rclcpp::get_logger("small_point_lio"), "unknown lidar type: %s", lidar_type.c_str());
             return;
         }
         lidar_adapter->setup_subscription(this, lidar_topic, [this](const std::vector<common::Point> &pointcloud) {
+#ifdef SPL_WITH_MCAP
+            if (recording_writer) {
+                std::lock_guard<std::mutex> guard(recording_mutex);
+                recording_writer->write_pointcloud(pointcloud);
+            }
+#endif
             small_point_lio->on_point_cloud_callback(pointcloud);
             small_point_lio->handle_once();
         });
@@ -209,10 +306,63 @@ namespace small_point_lio {
                     imu_msg.angular_velocity = Eigen::Vector3d(msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z);
                     imu_msg.linear_acceleration = Eigen::Vector3d(msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z);
                     imu_msg.timestamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9;
+#ifdef SPL_WITH_MCAP
+                    if (recording_writer) {
+                        std::lock_guard<std::mutex> guard(recording_mutex);
+                        recording_writer->write_imu(imu_msg);
+                    }
+#endif
                     small_point_lio->on_imu_callback(imu_msg);
                     small_point_lio->handle_once();
                 });
+        initialized = true;
     }
+
+    namespace transport {
+
+        RosTransport::RosTransport(const TransportConfig &transport_config, const Parameters &parameters)
+            : transport_config(transport_config), parameters(parameters) {}
+
+        RosTransport::~RosTransport() {
+            stop();
+        }
+
+        bool RosTransport::start() {
+            if (!rclcpp::ok()) {
+                rclcpp::init(0, nullptr);
+                owns_context = true;
+            }
+            rclcpp::NodeOptions options;
+            // 参数已经由 yaml 解析器读好了，不要再走 ROS 的参数声明，
+            // 否则同一个 key 会被声明两次。
+            options.automatically_declare_parameters_from_overrides(false);
+            node = std::make_shared<SmallPointLioNode>(options, parameters, transport_config);
+            if (!node->is_initialized()) {
+                // 不检查的话，spin() 会对已 shutdown 的 context 调 rclcpp::spin 直接 abort。
+                node.reset();
+                return false;
+            }
+            return true;
+        }
+
+        int RosTransport::spin() {
+            if (!node) {
+                return 1;
+            }
+            rclcpp::spin(node);
+            stop();
+            return 0;
+        }
+
+        void RosTransport::stop() {
+            node.reset();
+            if (owns_context && rclcpp::ok()) {
+                rclcpp::shutdown();
+                owns_context = false;
+            }
+        }
+
+    }// namespace transport
 
 }// namespace small_point_lio
 

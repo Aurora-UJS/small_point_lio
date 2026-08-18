@@ -8,11 +8,11 @@
 
 namespace small_point_lio {
 
-    SmallPointLio::SmallPointLio(rclcpp::Node &node) {
+    SmallPointLio::SmallPointLio(const Parameters &parameters)
+        : parameters(parameters) {
         // init param
-        parameters.read_parameters(node);
-        preprocess.parameters = &parameters;
-        estimator.parameters = &parameters;
+        preprocess.parameters = &this->parameters;
+        estimator.parameters = &this->parameters;
         estimator.Lidar_T_wrt_IMU = parameters.extrinsic_T.cast<state::value_type>();
         estimator.Lidar_R_wrt_IMU = parameters.extrinsic_R.cast<state::value_type>();
         if (parameters.extrinsic_est_en) {
